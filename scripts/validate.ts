@@ -1,7 +1,10 @@
 import * as fs from 'fs'
+import { exec } from 'child_process'
+import { EOL } from 'os'
 import { promisify } from 'util'
 import * as path from 'path'
 import imageSize from 'image-size'
+import * as github from '@actions/github'
 
 const bundleName = /^(([a-z0-9\-]+\.)+)[a-z0-9\-]+$/
 const url = /^(http(s?):\/\/)([a-zA-Z0-9.-]+)(:[0-9]{1,4})?/
@@ -61,7 +64,7 @@ const checkAPP = async (dir: fs.Dirent) => {
     if (manifest.contracts) {
         ensure(Array.isArray(manifest.contracts), 'contracts should be an array')
         manifest.contracts.forEach((contract: any) => {
-            ensure(contract && typeof contract === 'string'&& address.test(contract), 'invalid contract address')
+            ensure(contract && typeof contract === 'string' && address.test(contract), 'invalid contract address')
         })
     }
     manifest.tags.forEach((tag: string) => {
@@ -69,26 +72,81 @@ const checkAPP = async (dir: fs.Dirent) => {
     });
 }
 
-let appCount = 0
-void (async () => {
-    let dirs = await promisify(fs.readdir)(path.join(__dirname, '../apps'), { withFileTypes: true })
-    for (let dir of dirs) {
-        if (dir.isDirectory()) {
-            await checkAPP(dir).catch(e => { throw new Error(`check ${dir.name} -> ${e.message}`) })
-            appCount++
-        } else {
-            if (dir.name === '.gitkeep')
-                continue
-            if (dir.name == '.DS_Store' && process.env.CI !== 'true')
-                continue
-            throw new Error('invalid file in apps dir: ' + dir.name)
+const getChangedFiles = async (): Promise<string[]> => {
+    return new Promise((resolve, reject) => {
+        const baseRef = process.env.GITHUB_BASE_REF as string
+
+        exec(`git diff --name-only ${baseRef}`, (err, stdout, stderr) => {
+            if (err)
+                return reject(err)
+            if (stderr)
+                return reject(stderr)
+            if (!stdout)
+                return reject(new Error('Changes not found'))
+            return resolve(stdout.split(EOL).filter(x=>!!x))
+        })
+    })
+}
+
+if (github.context.eventName === 'pull_request') {
+    // pull request action should be configured to run on path 'apps/**'
+    void (async () => {
+        try {
+            const list = await getChangedFiles()
+
+            const apps: string[] = []
+            for (const fileName of list) {
+                if (!fileName.startsWith('apps/')) {
+                    throw new Error('please do not modify other files while submitting an app')
+                }
+
+                const app = fileName.split('/')[1]
+                if(!apps.includes(app)) {
+                    apps.push(app)
+                }
+            }
+
+            if (apps.length != 1) {
+                throw new Error('please submit only one app at a time')
+            }
+
+            const dir = await promisify(fs.opendir)(path.join(__dirname, '../apps'+apps[0]))
+            await checkAPP((await dir.read())!)
+        } catch (e) {
+            const token = process.env.GITHUB_TOKEN as string
+            const octokit = github.getOctokit(token)
+
+            await octokit.rest.issues.createComment({
+                owner: github.context.issue.owner,
+                repo: github.context.issue.repo,
+                issue_number: github.context.issue.number,
+                body: '[Validation Bot]: ' + (e as Error).message || 'Validation failed, please check workflow run logs.'
+            })
         }
-    }
-})().catch(e => {
-    console.log(colors.red('Validation failed: ' + e.message))
-    process.exit(1)
-}).then(() => {
-    console.log(colors.green(`Validation passed, processed ${appCount} apps. Congrats!`))
-    process.exit(0)
-})
+    })()
+} else {
+    // run full validation if it's not a pull request
+    let appCount = 0
+    void (async () => {
+        let dirs = await promisify(fs.readdir)(path.join(__dirname, '../apps'), { withFileTypes: true })
+        for (let dir of dirs) {
+            if (dir.isDirectory()) {
+                await checkAPP(dir).catch(e => { throw new Error(`check ${dir.name} -> ${e.message}`) })
+                appCount++
+            } else {
+                if (dir.name === '.gitkeep')
+                    continue
+                if (dir.name == '.DS_Store' && process.env.CI !== 'true')
+                    continue
+                throw new Error('invalid file in apps dir: ' + dir.name)
+            }
+        }
+    })().catch(e => {
+        console.log(colors.red('Validation failed: ' + e.message))
+        process.exit(1)
+    }).then(() => {
+        console.log(colors.green(`Validation passed, processed ${appCount} apps. Congrats!`))
+        process.exit(0)
+    })
+}
 
