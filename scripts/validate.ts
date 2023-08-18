@@ -76,7 +76,7 @@ const getChangedFiles = async (): Promise<string[]> => {
     return new Promise((resolve, reject) => {
         const baseRef = process.env.GITHUB_BASE_REF as string
 
-        exec(`git diff --name-only ${baseRef}`, (err, stdout, stderr) => {
+        exec(`git diff --name-only origin/${baseRef}`, (err, stdout, stderr) => {
             if (err)
                 return reject(err)
             if (stderr)
@@ -116,12 +116,17 @@ if (github.context.eventName === 'pull_request') {
             const token = process.env.GITHUB_TOKEN as string
             const octokit = github.getOctokit(token)
 
+            console.log(colors.red('Validation failed: ' + e.message))
             await octokit.rest.issues.createComment({
                 owner: github.context.issue.owner,
                 repo: github.context.issue.repo,
                 issue_number: github.context.issue.number,
                 body: '[Validation Bot]: ' + (e as Error).message || 'Validation failed, please check workflow run logs.'
             })
+            process.exit(1)
+        } finally {
+            console.log(colors.green(`Validation passed, Congrats!`))
+            process.exit(0)
         }
     })()
 } else {
