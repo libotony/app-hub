@@ -11,6 +11,15 @@ const url = /^(http(s?):\/\/)([a-zA-Z0-9.-]+)(:[0-9]{1,4})?/
 const address = /^0x[a-f0-9]{40}$/
 const category = /collectibles|defi|games|marketplaces|utilities/
 
+class ValidationError extends Error { 
+    constructor(message: string) { 
+        super(message)
+        this.name = 'ValidationError'
+
+        Object.setPrototypeOf(this, ValidationError.prototype);
+    }
+}
+
 const colors = {
     red(str: string) {
         return `\x1b[31m${str}\x1b[0m`
@@ -22,7 +31,7 @@ const colors = {
 
 const ensure = (condition: boolean, msg = 'assert error') => {
     if (!condition) {
-        throw new Error(msg)
+        throw new ValidationError(msg)
     }
 }
 
@@ -97,7 +106,7 @@ if (github.context.eventName === 'pull_request') {
             const apps: string[] = []
             for (const fileName of list) {
                 if (!fileName.startsWith('apps/')) {
-                    throw new Error('please do not modify other files while submitting an app')
+                    throw new ValidationError('please do not modify other files while submitting an app')
                 }
 
                 const app = fileName.split('/')[1]
@@ -107,22 +116,25 @@ if (github.context.eventName === 'pull_request') {
             }
 
             if (apps.length != 1) {
-                throw new Error('please submit only one app at a time')
+                throw new ValidationError('please submit only one app at a time')
             }
 
             const dir = await promisify(fs.opendir)(path.join(__dirname, '../apps'+apps[0]))
             await checkAPP((await dir.read())!)
         } catch (e) {
-            const token = process.env.GITHUB_TOKEN as string
-            const octokit = github.getOctokit(token)
+            console.log(colors.red('Validation failed: ' + (e as Error).message))
 
-            console.log(colors.red('Validation failed: ' + e.message))
-            await octokit.rest.issues.createComment({
-                owner: github.context.issue.owner,
-                repo: github.context.issue.repo,
-                issue_number: github.context.issue.number,
-                body: '[Validation Bot]: ' + (e as Error).message || 'Validation failed, please check workflow run logs.'
-            })
+            if (e instanceof ValidationError) {
+                const token = process.env.GITHUB_TOKEN as string
+                const octokit = github.getOctokit(token)
+
+                await octokit.rest.issues.createComment({
+                    owner: github.context.issue.owner,
+                    repo: github.context.issue.repo,
+                    issue_number: github.context.issue.number,
+                    body: ':warning: ' + (e as Error).message || 'Validation failed, please check workflow run logs.'
+                })
+            }
             process.exit(1)
         } finally {
             console.log(colors.green(`Validation passed, Congrats!`))
